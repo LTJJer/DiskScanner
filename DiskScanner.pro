@@ -67,7 +67,7 @@ DESTDIR = $${PWD}/bin/$${BUILD_TYPE}
 
 
 
-# 编译器优化（仅 Release）
+# 编译优化
 QMAKE_CXXFLAGS_RELEASE += -O3 -flto=thin
 QMAKE_LFLAGS_RELEASE += -O3 -flto=thin
 
