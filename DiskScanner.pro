@@ -47,7 +47,7 @@ OTHER_FILES += \
 # 应用信息
 RC_ICONS = ./Resources/Icon/icon.ico
 
-VERSION = 1.0.0
+VERSION = 1.1.0
 MAKE_TARGET_COMPANY = "LT_JJ"
 QMAKE_TARGET_DESCRIPTION = $${TARGET}
 QMAKE_TARGET_COPYRIGHT = "Copyright © 2026 LT_JJ. Licensed under MIT."
@@ -64,6 +64,12 @@ CONFIG(debug, debug|release) {
 }
 
 DESTDIR = $${PWD}/bin/$${BUILD_TYPE}
+
+
+
+# 编译器优化（仅 Release）
+QMAKE_CXXFLAGS_RELEASE += -O3 -flto=thin
+QMAKE_LFLAGS_RELEASE += -O3 -flto=thin
 
 
 

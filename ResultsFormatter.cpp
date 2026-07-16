@@ -2,6 +2,7 @@
 
 #include <QTextStream>
 #include <QStringConverter>
+#include <QDateTime>
 #include <QDir>
 #include <algorithm>
 
@@ -11,7 +12,7 @@ QString formatSize(qint64 bytes)
     return QString::number(mb, 'f', 2) + QStringLiteral(" MB");
 }
 
-QString formatResultsText(const QVector<ScanItem>& results,
+QString formatResultsText(const std::vector<ScanItem>& results,
                           const ScanParams& p,
                           int scanned, qint64 elapsedMs)
 {
@@ -32,20 +33,20 @@ QString formatResultsText(const QVector<ScanItem>& results,
     out << QStringLiteral("文件大小阈值：") << QString::number(p.fileMb, 'f', 2) << QStringLiteral(" MB\n");
     out << QStringLiteral("共扫描条目：") << scanned << "\n";
     out << QStringLiteral("耗时：") << QString::number(elapsedMs / 1000.0, 'f', 2) << QStringLiteral(" 秒\n");
-    out << QStringLiteral("匹配结果：") << results.size()
+    out << QStringLiteral("匹配结果：") << int(results.size())
         << QStringLiteral(" 项（目录 ") << dirCount
         << QStringLiteral("，文件 ") << fileCount << QStringLiteral("）\n");
     out << QStringLiteral("========================================\n\n");
 
-    for (const ScanItem& s : std::as_const(results)) {
+    for (const ScanItem& s : results) {
         out << (s.isDir ? QStringLiteral("[目录] ") : QStringLiteral("[文件] "))
             << QDir::toNativeSeparators(s.path) << "\n";
         out << QStringLiteral("    大小：") << formatSize(s.size)
             << QStringLiteral("  (") << s.size << QStringLiteral(" bytes)\n");
         out << QStringLiteral("    修改时间：")
-            << (s.mtime.isValid() ? s.mtime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QStringLiteral("-")) << "\n";
+            << (s.mtimeMs > 0 ? QDateTime::fromMSecsSinceEpoch(s.mtimeMs).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QStringLiteral("-")) << "\n";
         out << QStringLiteral("    创建时间：")
-            << (s.ctime.isValid() ? s.ctime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QStringLiteral("-")) << "\n\n";
+            << (s.ctimeMs > 0 ? QDateTime::fromMSecsSinceEpoch(s.ctimeMs).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QStringLiteral("-")) << "\n\n";
     }
     out.flush();
     return text;

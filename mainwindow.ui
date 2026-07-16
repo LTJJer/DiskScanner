@@ -82,10 +82,10 @@
          <string> 小时</string>
         </property>
         <property name="decimals">
-         <number>2</number>
+         <number>3</number>
         </property>
         <property name="maximum">
-         <double>999999.000000000000000</double>
+         <double>16777215.000000000000000</double>
         </property>
         <property name="singleStep">
          <double>1.000000000000000</double>
@@ -111,10 +111,10 @@
          <string> MB</string>
         </property>
         <property name="decimals">
-         <number>2</number>
+         <number>3</number>
         </property>
         <property name="maximum">
-         <double>999999999.000000000000000</double>
+         <double>16777215.000000000000000</double>
         </property>
         <property name="singleStep">
          <double>10.000000000000000</double>
@@ -140,10 +140,10 @@
          <string> MB</string>
         </property>
         <property name="decimals">
-         <number>2</number>
+         <number>3</number>
         </property>
         <property name="maximum">
-         <double>999999999.000000000000000</double>
+         <double>16777215.000000000000000</double>
         </property>
         <property name="singleStep">
          <double>10.000000000000000</double>
@@ -224,6 +224,30 @@
       <string notr="true">color: gray;</string>
      </property>
     </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="searchLayout">
+     <item>
+      <widget class="QLabel" name="labelSearch">
+       <property name="text">
+        <string>搜索：</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="searchEdit">
+       <property name="toolTip">
+        <string>语法：以空格分隔多个关键词。无前缀=需包含其一（任一匹配），!前缀=不可出现。例如 "AAA BBB !CCC" 表示路径包含 AAA 或 BBB，且不包含 CCC。可仅包含或仅排除。</string>
+       </property>
+       <property name="placeholderText">
+        <string>包含词1 包含词2 !排除词1 !排除词2（包含项匹配任一，排除项不可出现）</string>
+       </property>
+       <property name="clearButtonEnabled">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
    <item>
     <widget class="QTreeWidget" name="treeWidget">
