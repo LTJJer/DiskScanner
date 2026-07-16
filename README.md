@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="Resources/Icon/Icon.svg" alt="Disk Scanner" width="200px">
+  <img src="Resources/Icon/Icon.svg" alt="Disk Scanner 图标" width="200px">
 
   <h1>Disk Scanner</h1>
   <p>扫描并显示指定路径下指定时间内创建或修改过、大小大于指定大小的文件或文件夹</p>
