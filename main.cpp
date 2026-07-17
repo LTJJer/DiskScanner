@@ -9,6 +9,7 @@
 #include "ResultsFormatter.h"
 
 // 命令行模式：DiskScanner.exe --cli <root> <hours> <folderMb> <fileMb> <output.txt>
+// 参数沿用旧语义：hours 为小时，folderMb/fileMb 为 MB。内部统一换算为毫秒/字节。
 // 不启动 GUI，直接同步扫描并写入结果文件。返回 0 表示成功，非 0 表示失败。
 static int runCli(int argc, char* argv[])
 {
@@ -40,7 +41,11 @@ static int runCli(int argc, char* argv[])
     fprintf(stderr, "Scanning: %s\n", argv[2]);
     fflush(stderr);
 
-    ScanParams params{rootDir.absolutePath(), hours, folderMb, fileMb};
+    // CLI 沿用旧单位（小时/MB），统一换算为绝对单位（毫秒/字节）
+    const qint64 timeMs      = qint64(hours    * 3600.0 * 1000.0);
+    const qint64 folderBytes = qint64(folderMb * 1024.0 * 1024.0);
+    const qint64 fileBytes   = qint64(fileMb   * 1024.0 * 1024.0);
+    ScanParams params{rootDir.absolutePath(), timeMs, folderBytes, fileBytes};
     ScanWorker worker(params);
     worker.doScan();  // 同步执行扫描，无需事件循环
 

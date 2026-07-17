@@ -15,11 +15,13 @@ struct ScanItem {
 };
 
 // 扫描参数
+// 时间以毫秒、大小以字节存储，GUI/CLI 在入口处将用户输入（含单位）换算为此结构。
+// 这样扫描核心只依赖绝对单位，便于多入口复用，且避免浮点阈值在热路径反复换算。
 struct ScanParams {
     QString root;
-    double hours = 0;
-    double folderMb = 0;
-    double fileMb = 0;
+    qint64 timeRangeMs = 0;          // 时间范围（毫秒）
+    qint64 folderBytesThreshold = 0; // 文件夹大小阈值（字节）
+    qint64 fileBytesThreshold = 0;   // 文件大小阈值（字节）
 };
 
 #endif // SCANTYPES_H

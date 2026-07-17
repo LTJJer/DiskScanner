@@ -163,6 +163,39 @@ void MainWindow::onBrowse()
     if (!dir.isEmpty()) ui->dirEdit->setText(QDir::toNativeSeparators(dir));
 }
 
+// 时间单位换算为毫秒
+//   0=分钟 1=小时 2=天 3=周 4=月 5=年（月=30 天，年=365 天，近似）
+static qint64 timeToMs(double value, int unitIdx)
+{
+    const double MIN  = 60.0 * 1000.0;
+    const double HOUR = 60.0 * MIN;
+    const double DAY  = 24.0 * HOUR;
+    const double WEEK = 7.0  * DAY;
+    const double MON  = 30.0 * DAY;
+    const double YEAR = 365.0 * DAY;
+    static const double kFactors[] = { MIN, HOUR, DAY, WEEK, MON, YEAR };
+    if (unitIdx < 0 || unitIdx >= int(sizeof(kFactors)/sizeof(kFactors[0])))
+        unitIdx = 1;  // 默认小时
+    return qint64(value * kFactors[unitIdx]);
+}
+
+// 大小单位换算为字节
+//   0=B 1=KB 2=MB 3=GB 4=TB 5=PB（base=1024）
+static qint64 sizeToBytes(double value, int unitIdx)
+{
+    static const double kFactors[] = {
+        1.0,
+        1024.0,
+        1024.0 * 1024.0,
+        1024.0 * 1024.0 * 1024.0,
+        1024.0 * 1024.0 * 1024.0 * 1024.0,
+        1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0
+    };
+    if (unitIdx < 0 || unitIdx >= int(sizeof(kFactors)/sizeof(kFactors[0])))
+        unitIdx = 2;  // 默认 MB
+    return qint64(value * kFactors[unitIdx]);
+}
+
 void MainWindow::onScan()
 {
     const QString root = ui->dirEdit->text().trimmed();
@@ -179,7 +212,10 @@ void MainWindow::onScan()
         QMessageBox::warning(this, tr("提示"), tr("指定的路径不是目录：\n%1").arg(root));
         return;
     }
-    startScan(root, ui->hoursSpin->value(), ui->folderMbSpin->value(), ui->fileMbSpin->value());
+    const qint64 timeMs       = timeToMs(ui->hoursSpin->value(),     ui->hoursUnit->currentIndex());
+    const qint64 folderBytes  = sizeToBytes(ui->folderMbSpin->value(), ui->folderSizeUnit->currentIndex());
+    const qint64 fileBytes    = sizeToBytes(ui->fileMbSpin->value(),   ui->fileSizeUnit->currentIndex());
+    startScan(root, timeMs, folderBytes, fileBytes);
 }
 
 void MainWindow::onCancel()
@@ -322,7 +358,8 @@ void MainWindow::applyFilter()
     ui->clearBtn->setEnabled(!m_allResults.empty());
 }
 
-void MainWindow::startScan(const QString& root, double hours, double folderMb, double fileMb)
+void MainWindow::startScan(const QString& root, qint64 timeRangeMs,
+                           qint64 folderBytesThreshold, qint64 fileBytesThreshold)
 {
     m_cancelled = false;
     m_failed = false;
@@ -332,7 +369,7 @@ void MainWindow::startScan(const QString& root, double hours, double folderMb, d
     ui->saveBtn->setEnabled(false);
     ui->clearBtn->setEnabled(false);
 
-    m_lastParams = {root, hours, folderMb, fileMb};
+    m_lastParams = {root, timeRangeMs, folderBytesThreshold, fileBytesThreshold};
 
     ui->scanBtn->setEnabled(false);
     ui->cancelBtn->setEnabled(true);

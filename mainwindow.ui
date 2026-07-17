@@ -74,26 +74,67 @@
        </widget>
       </item>
       <item row="1" column="1">
-       <widget class="QDoubleSpinBox" name="hoursSpin">
-        <property name="toolTip">
-         <string>列出在最近该小时数内修改过或创建的项目</string>
-        </property>
-        <property name="suffix">
-         <string> 小时</string>
-        </property>
-        <property name="decimals">
-         <number>3</number>
-        </property>
-        <property name="maximum">
-         <double>16777215.000000000000000</double>
-        </property>
-        <property name="singleStep">
-         <double>1.000000000000000</double>
-        </property>
-        <property name="value">
-         <double>24.000000000000000</double>
-        </property>
-       </widget>
+       <layout class="QHBoxLayout" name="hoursLayout">
+        <item>
+         <widget class="QDoubleSpinBox" name="hoursSpin">
+          <property name="toolTip">
+           <string>列出在最近该时间范围内修改过或创建的项目</string>
+          </property>
+          <property name="decimals">
+           <number>3</number>
+          </property>
+          <property name="maximum">
+           <double>1125899906842624.000000000000000</double>
+          </property>
+          <property name="singleStep">
+           <double>1.000000000000000</double>
+          </property>
+          <property name="value">
+           <double>24.000000000000000</double>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="hoursUnit">
+          <property name="toolTip">
+           <string>时间单位</string>
+          </property>
+          <property name="currentIndex">
+           <number>1</number>
+          </property>
+          <item>
+           <property name="text">
+            <string>分钟</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>小时</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>天</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>周</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>月</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>年</string>
+           </property>
+          </item>
+         </widget>
+        </item>
+       </layout>
       </item>
       <item row="2" column="0">
        <widget class="QLabel" name="labelFolderMb">
@@ -103,26 +144,67 @@
        </widget>
       </item>
       <item row="2" column="1">
-       <widget class="QDoubleSpinBox" name="folderMbSpin">
-        <property name="toolTip">
-         <string>文件夹总大小超过该值才会被列出</string>
-        </property>
-        <property name="suffix">
-         <string> MB</string>
-        </property>
-        <property name="decimals">
-         <number>3</number>
-        </property>
-        <property name="maximum">
-         <double>16777215.000000000000000</double>
-        </property>
-        <property name="singleStep">
-         <double>10.000000000000000</double>
-        </property>
-        <property name="value">
-         <double>100.000000000000000</double>
-        </property>
-       </widget>
+       <layout class="QHBoxLayout" name="folderSizeLayout">
+        <item>
+         <widget class="QDoubleSpinBox" name="folderMbSpin">
+          <property name="toolTip">
+           <string>文件夹总大小超过该值才会被列出</string>
+          </property>
+          <property name="decimals">
+           <number>3</number>
+          </property>
+          <property name="maximum">
+           <double>1125899906842624.000000000000000</double>
+          </property>
+          <property name="singleStep">
+           <double>10.000000000000000</double>
+          </property>
+          <property name="value">
+           <double>100.000000000000000</double>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="folderSizeUnit">
+          <property name="toolTip">
+           <string>大小单位</string>
+          </property>
+          <property name="currentIndex">
+           <number>2</number>
+          </property>
+          <item>
+           <property name="text">
+            <string>B</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>KB</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>MB</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>GB</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>TB</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>PB</string>
+           </property>
+          </item>
+         </widget>
+        </item>
+       </layout>
       </item>
       <item row="3" column="0">
        <widget class="QLabel" name="labelFileMb">
@@ -132,26 +214,67 @@
        </widget>
       </item>
       <item row="3" column="1">
-       <widget class="QDoubleSpinBox" name="fileMbSpin">
-        <property name="toolTip">
-         <string>文件大小超过该值才会被列出</string>
-        </property>
-        <property name="suffix">
-         <string> MB</string>
-        </property>
-        <property name="decimals">
-         <number>3</number>
-        </property>
-        <property name="maximum">
-         <double>16777215.000000000000000</double>
-        </property>
-        <property name="singleStep">
-         <double>10.000000000000000</double>
-        </property>
-        <property name="value">
-         <double>50.000000000000000</double>
-        </property>
-       </widget>
+       <layout class="QHBoxLayout" name="fileSizeLayout">
+        <item>
+         <widget class="QDoubleSpinBox" name="fileMbSpin">
+          <property name="toolTip">
+           <string>文件大小超过该值才会被列出</string>
+          </property>
+          <property name="decimals">
+           <number>3</number>
+          </property>
+          <property name="maximum">
+           <double>1125899906842624.000000000000000</double>
+          </property>
+          <property name="singleStep">
+           <double>10.000000000000000</double>
+          </property>
+          <property name="value">
+           <double>50.000000000000000</double>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="fileSizeUnit">
+          <property name="toolTip">
+           <string>大小单位</string>
+          </property>
+          <property name="currentIndex">
+           <number>2</number>
+          </property>
+          <item>
+           <property name="text">
+            <string>B</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>KB</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>MB</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>GB</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>TB</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>PB</string>
+           </property>
+          </item>
+         </widget>
+        </item>
+       </layout>
       </item>
      </layout>
     </widget>
