@@ -40,11 +40,11 @@ static inline ScanItem makeScanItem(bool isDir, std::wstring nativePath,
 ScanWorker::ScanWorker(const ScanParams& params, QObject* parent)
     : QObject(parent), m_params(params)
 {
-    m_folderBytesThreshold = qint64(m_params.folderMb * 1024.0 * 1024.0);
-    m_fileBytesThreshold   = qint64(m_params.fileMb   * 1024.0 * 1024.0);
-    // 截止时刻 = 当前时间 - 指定小时数（Unix 毫秒）
+    m_folderBytesThreshold = m_params.folderBytesThreshold;
+    m_fileBytesThreshold   = m_params.fileBytesThreshold;
+    // 截止时刻 = 当前时间 - 时间范围（Unix 毫秒）
     const QDateTime cutoff = QDateTime::currentDateTime()
-        .addMSecs(-qint64(m_params.hours * 3600.0 * 1000.0));
+        .addMSecs(-m_params.timeRangeMs);
     m_cutoffMs = cutoff.toMSecsSinceEpoch();
     // 线程数：逻辑核心数，上限 16（I/O 密集型，更多线程收益递减）
     m_threadCount = std::max(1, std::min(16, QThread::idealThreadCount()));

@@ -66,7 +66,8 @@ private:
     int m_lastScanned = 0;
     qint64 m_lastElapsed = 0;
 
-    void startScan(const QString& root, double hours, double folderMb, double fileMb);
+    void startScan(const QString& root, qint64 timeRangeMs,
+                   qint64 folderBytesThreshold, qint64 fileBytesThreshold);
     void populateTree();
     void applyFilter();          // 根据当前过滤器从 m_allResults 过滤到 m_results 并刷新树
     void resetUiIdle();
