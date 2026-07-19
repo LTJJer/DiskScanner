@@ -96,7 +96,7 @@ private:
     // 根级分批加载
     int m_rootInsertedCount = 0;              // 树形模式下已通过 beginInsertRows 暴露的根数
     QTimer* m_rootBatchTimer = nullptr;
-    static const int BATCH_SIZE = 200;
+    static constexpr int BATCH_SIZE = 200;
 
     // 过滤与排序
     QStringList m_includeTerms;
