@@ -14,6 +14,7 @@
 #include <deque>
 #include <vector>
 #include <memory>
+#include <unordered_map>
 
 #include "ScanTypes.h"
 
@@ -37,18 +38,37 @@ public:
     explicit ScanWorker(const ScanParams& params, QObject* parent = nullptr);
 
     const std::vector<ScanItem>& results() const { return m_results; }
+    // 转移结果所有权（避免 onFinished 中拷贝导致双份百万级数据驻留）
+    // move 后主动 swap 清空 m_results，确保无残留容量引用
+    std::vector<ScanItem> takeResults()
+    {
+        std::vector<ScanItem> out = std::move(m_results);
+        std::vector<ScanItem>().swap(m_results);  // 彻底清空，释放可能残留的容量
+        return out;
+    }
+    // 转移树索引所有权（与 takeResults 配对使用）
+    TreeIndex takeTreeIndex()
+    {
+        TreeIndex out = std::move(m_treeIndex);
+        m_treeIndex = TreeIndex{};
+        return out;
+    }
     int scannedCount() const { return m_scanned; }
     int scannedDirCount() const { return m_scannedDirs; }
     int scannedFileCount() const { return m_scannedFiles; }
     qint64 elapsedMs() const { return m_elapsedMs; }
     const ScanParams& params() const { return m_params; }
+    // 实际使用的线程数（自动模式下由驱动器类型决定）
+    int threadCount() const { return m_threadCount; }
+    // 扫描根路径所在驱动器的类型（用于 UI 显示与自适应决策回溯）
+    DriveKind driveKind() const { return m_driveKind; }
 
 public slots:
     void doScan();
     void cancel();
 
 signals:
-    void progress(int scanned, int dirCount, int fileCount,
+    void progress(int scanned, int dirCount, int fileCount, int matchedCount,
                   qint64 elapsedMs, const QString& currentPath);
     void finished();
     void failed(const QString& msg);
@@ -80,6 +100,7 @@ private:
     qint64 m_elapsedMs = 0;
 
     int m_threadCount = 1;
+    DriveKind m_driveKind = DriveKind::Unknown;  // 由 detectDriveKindForPath 在构造时填充
 
     // 目录树节点：Phase 1 并行构建，Phase 2 顺序聚合
     struct DirEntry {
@@ -96,6 +117,7 @@ private:
     struct WorkerContext {
         std::vector<std::unique_ptr<DirEntry>> localNodes;   // 本地节点池
         std::vector<ScanItem> localResults;                  // 本地文件匹配结果
+        std::vector<DirEntry*> localFileParents;             // 与 localResults 并行：每个文件所属的父 DirEntry
         // 线程本地计数器：消除每条目的原子 RMW 缓存行争用
         int scanned = 0;
         int scannedDirs = 0;
@@ -103,6 +125,7 @@ private:
         WorkerContext() {
             localNodes.reserve(256);
             localResults.reserve(256);
+            localFileParents.reserve(256);
         }
     };
     std::vector<std::unique_ptr<WorkerContext>> m_workerCtxs;
@@ -118,6 +141,15 @@ private:
 
     DirEntry* m_rootEntry = nullptr;
 
+    // 树索引构建所需的中途数据（仅 Phase 1~2 期间有效，buildTreeIndex 后清空）
+    // m_fileParents: 与 m_results 的文件段（前 fileCount 项）并行的父 DirEntry*
+    // m_folderDirEntryToIdx: 文件夹 DirEntry* -> m_results 下标（在 aggregateSizes 中填充）
+    std::vector<DirEntry*> m_fileParents;
+    std::unordered_map<DirEntry*, int> m_folderDirEntryToIdx;
+
+    // 最终树索引（在 emit finished 前由 buildTreeIndex 填充，takeTreeIndex 取走）
+    TreeIndex m_treeIndex;
+
     bool timeMatches(qint64 mtimeMs, qint64 ctimeMs) const;
     // 检查是否应发射进度（限频），返回 true 时调用方才构造路径并调用 emitProgress
     bool shouldEmitProgress(qint64 nowMs) const;
@@ -127,6 +159,11 @@ private:
     qint64 aggregateSizes(DirEntry* node);
     DirEntry* createDirEntryLocal(WorkerContext& ctx, const std::wstring& path,
                                   DirEntry* parent, qint64 mtimeMs, qint64 ctimeMs);
+    // 构建 m_treeIndex：基于 m_fileParents 与 m_folderDirEntryToIdx 计算父子关系，
+    // 并按 size 降序排序每一层（替代原先对 m_results 的全局排序）
+    void buildTreeIndex();
+    // 检测指定路径所在驱动器的类型（Windows API：GetDriveTypeW + IOCTL_STORAGE_QUERY_PROPERTY）
+    static DriveKind detectDriveKindForPath(const std::wstring& nativePath);
 };
 
 #endif // SCANWORKER_H

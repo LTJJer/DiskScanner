@@ -5,11 +5,13 @@
 #include <QThread>
 #include <QTimer>
 #include <QStringList>
+#include <QModelIndex>
 #include <vector>
 
 #include "ScanTypes.h"
 
 class ScanWorker;
+class ScanResultsModel;
 
 namespace Ui { class MainWindow; }
 
@@ -42,34 +44,39 @@ private slots:
     void onCancel();
     void onSave();
     void onClear();
-    void onProgress(int scanned, int dirCount, int fileCount,
+    void onProgress(int scanned, int dirCount, int fileCount, int matchedCount,
                     qint64 elapsedMs, const QString& currentPath);
     void onFinished();
-    void onItemDoubleClicked();
+    void onItemDoubleClicked(const QModelIndex& index);
     void onSearchDebounced();  // 搜索框输入防抖触发
+
 
 private:
     Ui::MainWindow* ui = nullptr;
     QThread* m_thread = nullptr;
     ScanWorker* m_worker = nullptr;
+    ScanResultsModel* m_model = nullptr;       // 持有全量数据 + 过滤索引（唯一存储）
     bool m_cancelled = false;
     bool m_failed = false;
 
     ScanParams m_lastParams;
-    // 全部扫描结果（未经搜索过滤）
-    std::vector<ScanItem> m_allResults;
-    // 当前显示结果（经搜索过滤）
-    std::vector<ScanItem> m_results;
     SearchFilter m_currentFilter;
     QTimer* m_searchDebounce = nullptr;
 
+    // 统计：扫描完成时记录，避免每次过滤都重新遍历模型
+    int m_lastTotalAll = 0;
+    int m_lastTotalDirs = 0;
+    int m_lastTotalFiles = 0;
     int m_lastScanned = 0;
     qint64 m_lastElapsed = 0;
+    // 扫描器实际使用的线程数与驱动器类型（用于状态栏展示自适应决策）
+    int m_lastThreadCount = 0;
+    DriveKind m_lastDriveKind = DriveKind::Unknown;
 
     void startScan(const QString& root, qint64 timeRangeMs,
-                   qint64 folderBytesThreshold, qint64 fileBytesThreshold);
-    void populateTree();
-    void applyFilter();          // 根据当前过滤器从 m_allResults 过滤到 m_results 并刷新树
+                   qint64 folderBytesThreshold, qint64 fileBytesThreshold,
+                   int threadCount);
+    void applyFilter();          // 应用搜索过滤器到 proxy model 并刷新状态
     void resetUiIdle();
     bool writeResults(const QString& path) const;
     void cleanupThread();        // 停止线程并释放 worker/thread 对象

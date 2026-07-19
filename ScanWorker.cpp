@@ -1,10 +1,17 @@
 #include "ScanWorker.h"
 
+#include <algorithm>
+#include <cwctype>      // std::iswalpha
+#include <cstring>      // std::strlen
+
 #ifdef Q_OS_WIN
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <fileapi.h>
+#include <malloc.h>      // _heapmin
+#include <winioctl.h>    // IOCTL_STORAGE_QUERY_PROPERTY, STORAGE_PROPERTY_QUERY
+#include <ntddstor.h>    // STORAGE_BUS_TYPE, BusTypeNvme 等
 #endif
 
 // 路径拼接：若 parent 已以 '\\' 结尾（如驱动器根 "D:\"）则不再追加分隔符，
@@ -37,17 +44,204 @@ static inline ScanItem makeScanItem(bool isDir, std::wstring nativePath,
     return it;
 }
 
+#ifdef Q_OS_WIN
+// ── 驱动器类型检测 ──────────────────────────────────────────────────
+// 实现思路：
+//   1. 从原生路径提取盘符根（"D:\Folder" -> "D:\"），UNC 路径直接判为 Network
+//   2. GetDriveTypeW 区分 Removable / Remote / CDROM / Fixed
+//   3. 对 DRIVE_FIXED，打开物理设备 "\\.\D:"，下发 IOCTL_STORAGE_QUERY_PROPERTY
+//      查询 StorageDeviceProperty，依据 STORAGE_DEVICE_DESCRIPTOR::BusType 判定：
+//        - Nvme / Usb / Mmc / Sd / Ufs / SCM -> 闪存，按 SSD 策略
+//        - Sata / Ata / Atapi / Scsi / Sas / RAID / Fibre -> 可能 SSD 也可能 HDD，
+//          在 VendorId/ProductId/SerialNumber 等 ASCII 串中搜 "SSD" 关键字，
+//          命中判 SSD，否则保守按 HDD（避免磁头颠簸）
+//        - 其他总线 -> HDD
+//   4. 任何步骤失败 -> Unknown（保守 2 线程）
+
+// 从完整原生路径提取驱动器根，如 "D:\Folder\Sub" -> "D:\"
+// 不以 "<letter>:\" 开头（如 UNC \\server\share）时返回空串
+static std::wstring extractDriveRoot(const std::wstring& nativePath)
+{
+    if (nativePath.size() >= 3 &&
+        std::iswalpha(static_cast<wint_t>(nativePath[0])) &&
+        nativePath[1] == L':' &&
+        nativePath[2] == L'\\') {
+        return nativePath.substr(0, 3);  // "D:\"
+    }
+    return std::wstring();
+}
+
+// 在 STORAGE_DEVICE_DESCRIPTOR 跟随的变长 ASCII 字符串区域中搜索 needle（不区分大小写）
+// desc 指向整个 buffer 起始，bufferSize 为 buffer 字节数
+// STORAGE_DEVICE_DESCRIPTOR 中各 *Offset 字段为相对 buffer 起始的字节偏移，0 表示不存在
+static bool descriptorStringContains(const STORAGE_DEVICE_DESCRIPTOR* desc,
+                                     const void* buffer, size_t bufferSize,
+                                     const char* needleAscii)
+{
+    const char* base = static_cast<const char*>(buffer);
+    const DWORD offsets[] = {
+        desc->VendorIdOffset,
+        desc->ProductIdOffset,
+        desc->ProductRevisionOffset,
+        desc->SerialNumberOffset
+    };
+    const size_t needleLen = std::strlen(needleAscii);
+    if (needleLen == 0) return false;
+
+    for (DWORD off : offsets) {
+        if (off == 0 || size_t(off) >= bufferSize) continue;
+        const char* s = base + off;
+        const size_t maxLen = bufferSize - off;
+        size_t slen = 0;
+        while (slen < maxLen && s[slen] != '\0') ++slen;
+        if (slen < needleLen) continue;
+        for (size_t i = 0; i + needleLen <= slen; ++i) {
+            bool match = true;
+            for (size_t j = 0; j < needleLen; ++j) {
+                char a = s[i + j];
+                char b = needleAscii[j];
+                if (a >= 'a' && a <= 'z') a -= char('a' - 'A');
+                if (b >= 'a' && b <= 'z') b -= char('a' - 'A');
+                if (a != b) { match = false; break; }
+            }
+            if (match) return true;
+        }
+    }
+    return false;
+}
+
+DriveKind ScanWorker::detectDriveKindForPath(const std::wstring& nativePath)
+{
+    const std::wstring driveRoot = extractDriveRoot(nativePath);
+    if (driveRoot.empty()) {
+        // UNC \\server\share 或无盘符路径，按网络盘处理
+        return DriveKind::Network;
+    }
+
+    const UINT dt = GetDriveTypeW(driveRoot.c_str());
+    switch (dt) {
+        case DRIVE_REMOVABLE: return DriveKind::Removable;
+        case DRIVE_REMOTE:    return DriveKind::Network;
+        case DRIVE_CDROM:
+        case DRIVE_RAMDISK:
+            return DriveKind::Unknown;
+        case DRIVE_FIXED: {
+            // 对固定盘进一步用 IOCTL_STORAGE_QUERY_PROPERTY 查询总线类型
+            // 打开 "\\.\D:"（物理设备路径，仅需 FILE_READ_ATTRIBUTES 权限，无需管理员）
+            const std::wstring devPath = L"\\\\.\\" + driveRoot.substr(0, 2);
+            HANDLE hDev = CreateFileW(devPath.c_str(),
+                                       FILE_READ_ATTRIBUTES,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                       nullptr, OPEN_EXISTING, 0, nullptr);
+            if (hDev == INVALID_HANDLE_VALUE) {
+                return DriveKind::Unknown;
+            }
+            STORAGE_PROPERTY_QUERY query = {};
+            query.PropertyId = StorageDeviceProperty;
+            query.QueryType = PropertyStandardQuery;
+
+            // 缓冲区需容纳 STORAGE_DEVICE_DESCRIPTOR + 变长 ASCII 字符串
+            unsigned char buffer[4096] = {};
+            DWORD bytesReturned = 0;
+            BOOL ok = DeviceIoControl(hDev,
+                                       IOCTL_STORAGE_QUERY_PROPERTY,
+                                       &query, sizeof(query),
+                                       buffer, sizeof(buffer),
+                                       &bytesReturned, nullptr);
+            CloseHandle(hDev);
+            if (!ok || bytesReturned < sizeof(STORAGE_DEVICE_DESCRIPTOR)) {
+                return DriveKind::Unknown;
+            }
+
+            const STORAGE_DEVICE_DESCRIPTOR* desc =
+                reinterpret_cast<const STORAGE_DEVICE_DESCRIPTOR*>(buffer);
+
+            switch (desc->BusType) {
+                case BusTypeNvme:
+                case BusTypeUsb:
+                case BusTypeMmc:
+                case BusTypeSd:
+                case BusTypeUfs:
+                case BusTypeSCM:
+                    // 闪存类介质，按 SSD 策略（高并发）
+                    return DriveKind::SSD;
+                case BusTypeSata:
+                case BusTypeAta:
+                case BusTypeAtapi:
+                case BusTypeScsi:
+                case BusTypeSas:
+                case BusTypeRAID:
+                case BusTypeFibre:
+                    // SATA/SCSI/SAS 既可能是 SSD 也可能是 HDD
+                    // 在设备描述 ASCII 串中搜 "SSD" 关键字
+                    if (descriptorStringContains(desc, buffer, sizeof(buffer), "SSD")) {
+                        return DriveKind::SSD;
+                    }
+                    // 未命中 SSD 关键字，保守按 HDD 处理
+                    return DriveKind::HDD;
+                default:
+                    // 其他总线类型，保守按 HDD
+                    return DriveKind::HDD;
+            }
+        }
+        default:
+            return DriveKind::Unknown;
+    }
+}
+#else
+// 非 Windows 平台暂不实现驱动器类型检测
+DriveKind ScanWorker::detectDriveKindForPath(const std::wstring&)
+{
+    return DriveKind::Unknown;
+}
+#endif
+
 ScanWorker::ScanWorker(const ScanParams& params, QObject* parent)
     : QObject(parent), m_params(params)
 {
     m_folderBytesThreshold = m_params.folderBytesThreshold;
     m_fileBytesThreshold   = m_params.fileBytesThreshold;
-    // 截止时刻 = 当前时间 - 时间范围（Unix 毫秒）
-    const QDateTime cutoff = QDateTime::currentDateTime()
-        .addMSecs(-m_params.timeRangeMs);
-    m_cutoffMs = cutoff.toMSecsSinceEpoch();
-    // 线程数：逻辑核心数，上限 16（I/O 密集型，更多线程收益递减）
-    m_threadCount = std::max(1, std::min(16, QThread::idealThreadCount()));
+    // 截止时刻：timeRangeMs==0 表示不限时间，cutoff 置 0 使所有有效时间戳都满足 >= cutoff
+    // （timeMatches 中 mtimeMs > 0 && mtimeMs >= 0 对所有有效时间戳恒真）
+    if (m_params.timeRangeMs > 0) {
+        const QDateTime cutoff = QDateTime::currentDateTime()
+            .addMSecs(-m_params.timeRangeMs);
+        m_cutoffMs = cutoff.toMSecsSinceEpoch();
+    } else {
+        m_cutoffMs = 0;
+    }
+    // 线程数决策：
+    //   用户指定 >0：按用户值（1~32），不进行驱动器类型检测
+    //   用户指定 0（自动）：先检测扫描根所在驱动器类型，再据此决定：
+    //     - SSD       : min(16, idealThreadCount)，沿用原逻辑
+    //     - HDD       : clamp(2, 4, ideal/2)，避免磁头颠簸
+    //     - Removable : 2（U盘/SD 卡等闪存介质，IO 缓慢）
+    //     - Network   : 2（受限于带宽与延迟，并发收益小）
+    //     - Unknown   : 2（保守）
+    if (m_params.threadCount > 0) {
+        m_threadCount = std::max(1, std::min(32, m_params.threadCount));
+        // 用户显式指定时不进行驱动器类型检测，m_driveKind 保持 Unknown
+    } else {
+        const std::wstring rootNative = QDir::toNativeSeparators(m_params.root).toStdWString();
+        m_driveKind = detectDriveKindForPath(rootNative);
+        const int ideal = QThread::idealThreadCount();
+        switch (m_driveKind) {
+            case DriveKind::SSD:
+                m_threadCount = std::max(1, std::min(16, ideal));
+                break;
+            case DriveKind::HDD:
+                // 机械盘：2~4 线程；多核机器取 ideal/2，但不超过 4，不少于 2
+                m_threadCount = std::max(2, std::min(4, ideal / 2));
+                if (m_threadCount < 2) m_threadCount = 2;
+                break;
+            case DriveKind::Removable:
+            case DriveKind::Network:
+            case DriveKind::Unknown:
+            default:
+                m_threadCount = 2;
+                break;
+        }
+    }
 }
 
 void ScanWorker::doScan()
@@ -65,6 +259,9 @@ void ScanWorker::doScan()
     m_pendingDirs = 0;
     m_rootEntry = nullptr;
     m_workerCtxs.clear();
+    m_fileParents.clear();
+    m_folderDirEntryToIdx.clear();
+    m_treeIndex = TreeIndex{};
 
     QDir root(m_params.root);
     if (!root.exists()) {
@@ -135,6 +332,7 @@ void ScanWorker::doScan()
             totalFiles += ctx->scannedFiles;
         }
         m_results.reserve(totalLocalResults + size_t(totalDirs) + 16);
+        m_fileParents.reserve(totalLocalResults);
 
         for (auto& ctx : m_workerCtxs) {
             // 合并节点所有权
@@ -143,11 +341,16 @@ void ScanWorker::doScan()
             }
             ctx->localNodes.clear();
 
-            // 合并文件匹配结果
+            // 合并文件匹配结果与对应的父 DirEntry*
+            // 两者必须保持下标一一对应，供 buildTreeIndex 计算文件所属文件夹
             for (auto& item : ctx->localResults) {
                 m_results.push_back(std::move(item));
             }
+            for (DirEntry* p : ctx->localFileParents) {
+                m_fileParents.push_back(p);
+            }
             ctx->localResults.clear();
+            ctx->localFileParents.clear();
         }
         m_workerCtxs.clear();
     }
@@ -163,7 +366,115 @@ void ScanWorker::doScan()
         aggregateSizes(m_rootEntry);
     }
 
+    // 构建树索引（仍需 DirEntry 树：通过 m_fileParents 与 m_folderDirEntryToIdx
+    // 沿父链向上查找最近的结果中祖先文件夹）
+    // 内部按 size 降序排序每一层，替代原先对 m_results 的全局排序
+    buildTreeIndex();
+
+    // 聚合完成且树索引已构建，DirEntry 节点不再被需要，立即释放以降低峰值内存
+    // 使用 swap 而非 clear+shrink_to_fit：强制释放底层内存归还给 OS
+    // （shrink_to_fit 是非强制请求，部分实现不会立即归还）
+    std::vector<std::unique_ptr<DirEntry>>().swap(m_allNodes);
+    m_rootEntry = nullptr;
+    std::vector<DirEntry*>().swap(m_fileParents);
+    m_folderDirEntryToIdx.clear();
+    m_folderDirEntryToIdx = std::unordered_map<DirEntry*, int>{};
+
+    // 在工作线程中完成"重活"，避免主线程 onFinished 阻塞导致 UI 未响应：
+    //   shrink_to_fit 紧缩容量（reserve 可能 over-allocate，紧缩后 move 给 model 无需 realloc）
+    // 这样主线程 onFinished 只需 O(1) move + modelReset，UI 瞬间刷新
+    m_results.shrink_to_fit();
+
+#ifdef Q_OS_WIN
+    // 关键：swap 只是让 CRT 把节点内存标记为 free，但不会立即归还给 OS。
+    // 任务管理器看到的"内存"是进程工作集（Working Set），其中包含已 free 但未归还的页。
+    // _heapmin 内部调用 HeapCompact，强制 CRT 把 free list 中整页归还给 OS，
+    // 立即降低进程工作集。这是"536MB 不动"问题的直接修复。
+    // 1.2M 个 DirEntry 节点释放后的 free list 约 200-300MB，全部归还后内存可降 60%+
+    _heapmin();
+#endif
+
     emit finished();
+}
+
+// 构建树索引：基于 m_fileParents（文件段）与 m_folderDirEntryToIdx（文件夹段）
+// 计算每项的父项下标；对于不在结果中的直接父文件夹，沿 DirEntry->parent 链向上
+// 查找最近的结果中祖先文件夹；找不到则视为根级。
+// 完成后按 size 降序排序每一层（替代原先对 m_results 的全局排序）。
+void ScanWorker::buildTreeIndex()
+{
+    const int n = int(m_results.size());
+    m_treeIndex = TreeIndex{};
+    if (n == 0) return;
+
+    const int fileCount = int(m_fileParents.size());  // m_results 前 fileCount 项为文件
+
+    m_treeIndex.parents.assign(n, -1);
+    m_treeIndex.children.assign(n, {});
+    m_treeIndex.visibleRowOfItem.assign(n, 0);
+
+    // 沿父链查找最近的结果中祖先文件夹，返回其 m_results 下标，找不到返回 -1
+    auto findAncestorInResults = [this](DirEntry* dir) -> int {
+        while (dir && dir != m_rootEntry) {
+            auto it = m_folderDirEntryToIdx.find(dir);
+            if (it != m_folderDirEntryToIdx.end()) return it->second;
+            dir = dir->parent;
+        }
+        return -1;
+    };
+
+    // 1) 文件段：父项 = 所属 DirEntry 的最近结果祖先
+    for (int i = 0; i < fileCount; ++i) {
+        const int parentIdx = findAncestorInResults(m_fileParents[size_t(i)]);
+        m_treeIndex.parents[size_t(i)] = parentIdx;
+        if (parentIdx >= 0) {
+            m_treeIndex.children[size_t(parentIdx)].push_back(i);
+        } else {
+            m_treeIndex.roots.push_back(i);
+        }
+    }
+
+    // 2) 文件夹段：父项 = 自身 DirEntry->parent 的最近结果祖先
+    //    注意：文件夹被跳过过滤时，其子项的查找会绕过它继续向上（见 findAncestorInResults）
+    for (const auto& kv : m_folderDirEntryToIdx) {
+        DirEntry* dirEntry = kv.first;
+        const int idx = kv.second;
+        const int parentIdx = findAncestorInResults(dirEntry->parent);
+        m_treeIndex.parents[size_t(idx)] = parentIdx;
+        if (parentIdx >= 0) {
+            m_treeIndex.children[size_t(parentIdx)].push_back(idx);
+        } else {
+            m_treeIndex.roots.push_back(idx);
+        }
+    }
+
+    // 3) 按大小降序排序每一层（根级 + 每个节点的子项）
+    auto cmpBySizeDesc = [this](int a, int b) {
+        return m_results[size_t(a)].size > m_results[size_t(b)].size;
+    };
+    if (m_treeIndex.roots.size() > 1) {
+        std::sort(m_treeIndex.roots.begin(), m_treeIndex.roots.end(), cmpBySizeDesc);
+    }
+    for (int i = 0; i < n; ++i) {
+        if (m_treeIndex.children[size_t(i)].size() > 1) {
+            std::sort(m_treeIndex.children[size_t(i)].begin(),
+                      m_treeIndex.children[size_t(i)].end(), cmpBySizeDesc);
+        }
+    }
+
+    // 4) 构建 visibleRowOfItem：每项在其父项 children（或 roots）中的行号
+    //    用于模型 parent() 在 O(1) 内取回父项的行号，避免在百万级 roots 中线性查找
+    for (size_t i = 0; i < m_treeIndex.roots.size(); ++i) {
+        m_treeIndex.visibleRowOfItem[size_t(m_treeIndex.roots[i])] = int(i);
+    }
+    for (int i = 0; i < n; ++i) {
+        const auto& ch = m_treeIndex.children[size_t(i)];
+        for (size_t j = 0; j < ch.size(); ++j) {
+            m_treeIndex.visibleRowOfItem[size_t(ch[j])] = int(j);
+        }
+    }
+
+    m_treeIndex.visibleCount = n;
 }
 
 void ScanWorker::cancel()
@@ -196,13 +507,14 @@ void ScanWorker::emitProgress(const std::wstring& currentPathNative, qint64 nowM
         if (m_lastProgressMs.compare_exchange_strong(last, nowMs,
                 std::memory_order_relaxed, std::memory_order_relaxed)) {
             // 读取各线程本地计数器之和作为实时进度
-            int scanned = 0, dirs = 0, files = 0;
+            int scanned = 0, dirs = 0, files = 0, matched = 0;
             for (const auto& ctx : m_workerCtxs) {
                 scanned += ctx->scanned;
                 dirs += ctx->scannedDirs;
                 files += ctx->scannedFiles;
+                matched += int(ctx->localResults.size());
             }
-            emit progress(scanned, dirs, files, nowMs,
+            emit progress(scanned, dirs, files, matched, nowMs,
                          QString::fromWCharArray(currentPathNative.c_str(),
                                                   int(currentPathNative.size())));
         }
@@ -294,6 +606,8 @@ qint64 ScanWorker::aggregateSizes(DirEntry* node)
         total > m_folderBytesThreshold &&
         timeMatches(node->mtimeMs, node->ctimeMs)) {
         // Phase 2 单线程，直接追加到 m_results，无需锁
+        // 同步记录 DirEntry* -> m_results 下标，供 buildTreeIndex 查找文件夹父项
+        m_folderDirEntryToIdx.emplace(node, int(m_results.size()));
         m_results.push_back(makeScanItem(true, node->path, total,
                                          node->mtimeMs, node->ctimeMs));
     }
@@ -400,8 +714,10 @@ void ScanWorker::processDir(DirEntry* node, WorkerContext& ctx)
                     const size_t nameLen = std::wcslen(name);
                     const std::wstring childPath = joinPath(node->path, name, nameLen);
                     // 存入线程本地结果缓冲区，无锁；move 避免拷贝
+                    // 同时记录父 DirEntry，供后续 buildTreeIndex 计算文件所属文件夹
                     ctx.localResults.push_back(
                         makeScanItem(false, std::move(childPath), sz, mtMs, ctMs));
+                    ctx.localFileParents.push_back(node);
                 }
             }
         }
@@ -463,6 +779,7 @@ void ScanWorker::processDir(DirEntry* node, WorkerContext& ctx)
                     const std::wstring childPath = QDir::toNativeSeparators(info.filePath()).toStdWString();
                     ctx.localResults.push_back(
                         makeScanItem(false, childPath, sz, mtMs, ctMs));
+                    ctx.localFileParents.push_back(node);
                 }
             }
         }
