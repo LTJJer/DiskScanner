@@ -22,12 +22,14 @@ QT += widgets
 HEADERS += \
     ScanTypes.h \
     ScanWorker.h \
+    ScanResultsModel.h \
     ResultsFormatter.h \
     MainWindow.h
 
 SOURCES += \
     main.cpp \
     ScanWorker.cpp \
+    ScanResultsModel.cpp \
     ResultsFormatter.cpp \
     MainWindow.cpp
 

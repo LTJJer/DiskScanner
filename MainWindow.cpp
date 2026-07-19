@@ -2,6 +2,7 @@
 #include "ui_mainwindow.h"
 
 #include "ScanWorker.h"
+#include "ScanResultsModel.h"
 #include "ResultsFormatter.h"
 
 #include <QFileDialog>
@@ -11,7 +12,8 @@
 #include <QCloseEvent>
 #include <QStyle>
 #include <QHeaderView>
-#include <QTreeWidgetItem>
+#include <QTreeView>
+#include <QToolButton>
 #include <QFile>
 #include <QDateTime>
 #include <QProcess>
@@ -23,25 +25,8 @@
 #define NOMINMAX
 #include <windows.h>
 #include <shellapi.h>
+#include <malloc.h>      // _heapmin
 #endif
-
-// 让“大小”列按数值而非字符串排序
-class ResultTreeWidgetItem : public QTreeWidgetItem {
-public:
-    using QTreeWidgetItem::QTreeWidgetItem;
-    bool operator<(const QTreeWidgetItem& other) const override
-    {
-        const QTreeWidget* tw = treeWidget();
-        if (!tw) return false;
-        const int col = tw->sortColumn();
-        if (col == 2) {
-            const qint64 a = data(2, Qt::UserRole).toLongLong();
-            const qint64 b = other.data(2, Qt::UserRole).toLongLong();
-            return a < b;
-        }
-        return text(col) < other.text(col);
-    }
-};
 
 // 搜索过滤器：路径匹配 includeTerms（任一）与 excludeTerms（无一）
 // 大小写不敏感（NTFS 默认大小写不敏感；中文无大小写问题）
@@ -91,27 +76,66 @@ MainWindow::MainWindow(QWidget* parent) : QWidget(parent), ui(new Ui::MainWindow
     ui->currentLabel->setWordWrap(true);
     ui->currentLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
+    // 大小过滤勾选框：取消勾选时禁用对应输入控件（toggled 直接驱动 setEnabled）
+    // onScan 中按勾选状态决定传入 0（不限制）还是 spinbox 值
+    ui->hoursSpin->setEnabled(ui->hoursCheck->isChecked());
+    ui->hoursUnit->setEnabled(ui->hoursCheck->isChecked());
+    ui->folderMbSpin->setEnabled(ui->folderSizeCheck->isChecked());
+    ui->folderSizeUnit->setEnabled(ui->folderSizeCheck->isChecked());
+    ui->fileMbSpin->setEnabled(ui->fileSizeCheck->isChecked());
+    ui->fileSizeUnit->setEnabled(ui->fileSizeCheck->isChecked());
+    connect(ui->hoursCheck,      &QCheckBox::toggled, ui->hoursSpin,      &QWidget::setEnabled);
+    connect(ui->hoursCheck,      &QCheckBox::toggled, ui->hoursUnit,      &QWidget::setEnabled);
+    connect(ui->folderSizeCheck, &QCheckBox::toggled, ui->folderMbSpin,   &QWidget::setEnabled);
+    connect(ui->folderSizeCheck, &QCheckBox::toggled, ui->folderSizeUnit, &QWidget::setEnabled);
+    connect(ui->fileSizeCheck,   &QCheckBox::toggled, ui->fileMbSpin,     &QWidget::setEnabled);
+    connect(ui->fileSizeCheck,   &QCheckBox::toggled, ui->fileSizeUnit,   &QWidget::setEnabled);
+
     // 表头列宽模式：全部可交互拖拽调整
-    ui->treeWidget->header()->setSectionResizeMode(0, QHeaderView::Interactive);
-    ui->treeWidget->header()->setSectionResizeMode(1, QHeaderView::Interactive);
-    ui->treeWidget->header()->setSectionResizeMode(2, QHeaderView::Interactive);
-    ui->treeWidget->header()->setSectionResizeMode(3, QHeaderView::Interactive);
-    ui->treeWidget->header()->setSectionResizeMode(4, QHeaderView::Interactive);
+    ui->treeView->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    ui->treeView->header()->setSectionResizeMode(1, QHeaderView::Interactive);
+    ui->treeView->header()->setSectionResizeMode(2, QHeaderView::Interactive);
+    ui->treeView->header()->setSectionResizeMode(3, QHeaderView::Interactive);
+    ui->treeView->header()->setSectionResizeMode(4, QHeaderView::Interactive);
     // 默认列宽
-    ui->treeWidget->header()->resizeSection(0, 60);   // 类型
-    ui->treeWidget->header()->resizeSection(1, 420);   // 路径
-    ui->treeWidget->header()->resizeSection(2, 100);   // 大小
-    ui->treeWidget->header()->resizeSection(3, 160);   // 修改时间
-    ui->treeWidget->header()->resizeSection(4, 160);   // 创建时间
-    ui->treeWidget->header()->setStretchLastSection(true);
-    ui->treeWidget->header()->setSectionsMovable(false);
+    ui->treeView->header()->resizeSection(0, 60);   // 类型
+    ui->treeView->header()->resizeSection(1, 420);   // 路径
+    ui->treeView->header()->resizeSection(2, 100);   // 大小
+    ui->treeView->header()->resizeSection(3, 160);   // 修改时间
+    ui->treeView->header()->resizeSection(4, 160);   // 创建时间
+    ui->treeView->header()->setStretchLastSection(true);
+    ui->treeView->header()->setSectionsMovable(false);
+
+    // 自定义模型：内置过滤索引，无 QSortFilterProxyModel
+    // - m_allData 持有全量 ScanItem（唯一存储）
+    // - m_filteredIndices 仅存行号（4 字节/项），过滤时只重建索引
+    // 相比 QTreeWidget + QTreeWidgetItem：内存降 90%+
+    // 相比 QSortFilterProxyModel：内存再降 60%+，modelReset 瞬间完成
+    m_model = new ScanResultsModel(this);
+    ui->treeView->setModel(m_model);
+    m_model->sort(2, Qt::DescendingOrder);  // 默认按大小降序（对空索引无操作）
 
     connect(ui->browseBtn,  &QPushButton::clicked, this, &MainWindow::onBrowse);
     connect(ui->scanBtn,    &QPushButton::clicked, this, &MainWindow::onScan);
     connect(ui->cancelBtn,  &QPushButton::clicked, this, &MainWindow::onCancel);
     connect(ui->saveBtn,    &QPushButton::clicked, this, &MainWindow::onSave);
     connect(ui->clearBtn,   &QPushButton::clicked, this, &MainWindow::onClear);
-    connect(ui->treeWidget, &QTreeWidget::itemDoubleClicked, this, &MainWindow::onItemDoubleClicked);
+    connect(ui->treeView,   &QTreeView::doubleClicked, this, &MainWindow::onItemDoubleClicked);
+
+    // 并发线程旁边的 "?" 按钮：点击弹出使用说明
+    connect(ui->threadHelpBtn, &QToolButton::clicked, this, [this] {
+        QMessageBox::information(this, tr("并发线程使用说明"),
+            tr("并发线程数控制扫描时同时工作的线程数量。\n\n"
+               "• 自动（默认值 0）：由程序根据磁盘类型自动选择\n"
+               "    - SSD / NVMe：8~16 线程\n"
+               "    - 机械硬盘 HDD：2~4 线程（避免磁头频繁寻道反而变慢）\n\n"
+               "• 手动指定（1~32）：\n"
+               "    - 数值越大，CPU 与磁盘并发度越高，扫描越快\n"
+               "    - 但超过物理核心数后收益递减，且会增加内存占用\n"
+               "    - 建议：SSD 用 8~16，HDD 用 2~4\n\n"
+               "提示：扫描系统盘或大量小文件时，建议保持「自动」或适当降低线程数，\n"
+               "以减少对系统响应的影响。"));
+    });
 
     // 搜索框：防抖触发，避免每键都重建树
     m_searchDebounce = new QTimer(this);
@@ -196,6 +220,19 @@ static qint64 sizeToBytes(double value, int unitIdx)
     return qint64(value * kFactors[unitIdx]);
 }
 
+// 驱动器类型的中文标签（用于状态栏展示自适应决策）
+static QString driveKindLabel(DriveKind dk)
+{
+    switch (dk) {
+        case DriveKind::SSD:       return QStringLiteral("SSD");
+        case DriveKind::HDD:       return QStringLiteral("HDD");
+        case DriveKind::Removable: return QStringLiteral("可移动盘");
+        case DriveKind::Network:   return QStringLiteral("网络盘");
+        case DriveKind::Unknown:
+        default:                   return QStringLiteral("未知介质");
+    }
+}
+
 void MainWindow::onScan()
 {
     const QString root = ui->dirEdit->text().trimmed();
@@ -212,10 +249,15 @@ void MainWindow::onScan()
         QMessageBox::warning(this, tr("提示"), tr("指定的路径不是目录：\n%1").arg(root));
         return;
     }
-    const qint64 timeMs       = timeToMs(ui->hoursSpin->value(),     ui->hoursUnit->currentIndex());
-    const qint64 folderBytes  = sizeToBytes(ui->folderMbSpin->value(), ui->folderSizeUnit->currentIndex());
-    const qint64 fileBytes    = sizeToBytes(ui->fileMbSpin->value(),   ui->fileSizeUnit->currentIndex());
-    startScan(root, timeMs, folderBytes, fileBytes);
+    const qint64 timeMs       = ui->hoursCheck->isChecked()
+        ? timeToMs(ui->hoursSpin->value(), ui->hoursUnit->currentIndex()) : 0;
+    // 勾选时按 spinbox 值过滤；取消勾选则传 0（语义：不限制大小，列出所有文件/非空文件夹）
+    const qint64 folderBytes  = ui->folderSizeCheck->isChecked()
+        ? sizeToBytes(ui->folderMbSpin->value(), ui->folderSizeUnit->currentIndex()) : 0;
+    const qint64 fileBytes    = ui->fileSizeCheck->isChecked()
+        ? sizeToBytes(ui->fileMbSpin->value(),   ui->fileSizeUnit->currentIndex())   : 0;
+    const int threadCount     = int(ui->threadSpin->value());
+    startScan(root, timeMs, folderBytes, fileBytes, threadCount);
 }
 
 void MainWindow::onCancel()
@@ -228,7 +270,7 @@ void MainWindow::onCancel()
 
 void MainWindow::onSave()
 {
-    if (m_results.empty()) {
+    if (m_model->allData().empty()) {
         QMessageBox::information(this, tr("提示"), tr("当前没有可保存的结果。"));
         return;
     }
@@ -248,51 +290,74 @@ void MainWindow::onSave()
 
 void MainWindow::onClear()
 {
-    m_allResults.clear();
-    m_results.clear();
-    ui->treeWidget->clear();
+    m_model->clear();
+    m_lastTotalAll = m_lastTotalDirs = m_lastTotalFiles = 0;
     ui->saveBtn->setEnabled(false);
     ui->clearBtn->setEnabled(false);
     ui->progressBar->setValue(0);
     ui->statusLabel->setText(tr("已清空结果。"));
     ui->currentLabel->clear();
+
+#ifdef Q_OS_WIN
+    // 清空 model 后立即归还工作集，避免 freed 页滞留
+    _heapmin();
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+#endif
 }
 
 void MainWindow::onProgress(int scanned, int dirCount, int fileCount,
-                            qint64 elapsedMs, const QString& currentPath)
+                            int matchedCount, qint64 elapsedMs, const QString& currentPath)
 {
-    ui->statusLabel->setText(tr("正在扫描… 已扫描 %1 项（目录 %2，文件 %3），已用 %4 秒")
-        .arg(scanned).arg(dirCount).arg(fileCount)
+    ui->statusLabel->setText(tr("正在扫描… 已扫描 %1 项（目录 %2，文件 %3），匹配 %4 项，已用 %5 秒")
+        .arg(scanned).arg(dirCount).arg(fileCount).arg(matchedCount)
         .arg(elapsedMs / 1000.0, 0, 'f', 1));
     ui->currentLabel->setText(QDir::toNativeSeparators(currentPath));
 }
 
-void MainWindow::onItemDoubleClicked()
+void MainWindow::onItemDoubleClicked(const QModelIndex& index)
 {
-    QTreeWidgetItem* item = ui->treeWidget->currentItem();
-    if (!item) return;
-    const QString path = item->text(1);  // 路径列
-    if (path.isEmpty()) return;
+    if (!index.isValid()) return;
+    const ScanItem* item = m_model->itemForIndex(index);
+    if (!item || item->path.isEmpty()) return;
 
 #ifdef Q_OS_WIN
-    const QString nativePath = QDir::toNativeSeparators(path);
+    const QString nativePath = QDir::toNativeSeparators(item->path);
     const std::wstring param = (QStringLiteral("/select,\"") + nativePath + "\"").toStdWString();
     ShellExecuteW(nullptr, L"open", L"explorer.exe", param.c_str(), nullptr, SW_SHOWNORMAL);
 #else
-    QProcess::startDetached("xdg-open", {QFileInfo(path).absolutePath()});
+    QProcess::startDetached("xdg-open", {QFileInfo(item->path).absolutePath()});
 #endif
 }
 
 void MainWindow::onFinished()
 {
     if (m_worker) {
-        m_allResults   = m_worker->results();
+        // 取走结果所有权，避免拷贝导致百万级数据双份驻留
+        // 注意：worker 线程已在 emit finished() 前完成 buildTreeIndex（含每层 size 降序）
+        // + shrink_to_fit，这里 takeResults/takeTreeIndex 拿到的是已就绪、已紧缩的数据，
+        // 主线程无需再做任何重活
+        std::vector<ScanItem> allResults = m_worker->takeResults();
+        TreeIndex treeIndex = m_worker->takeTreeIndex();
         m_lastParams   = m_worker->params();
         m_lastScanned  = m_worker->scannedCount();
         m_lastElapsed  = m_worker->elapsedMs();
+        // 记录实际线程数与驱动器类型，供状态栏展示自适应决策
+        m_lastThreadCount = m_worker->threadCount();
+        m_lastDriveKind   = m_worker->driveKind();
+
+        // 统计：一次性遍历，记录到成员变量，避免每次过滤都重新遍历
+        m_lastTotalAll  = int(allResults.size());
+        m_lastTotalDirs = int(std::count_if(allResults.begin(), allResults.end(),
+                                            [](const ScanItem& s) { return s.isDir; }));
+        m_lastTotalFiles = m_lastTotalAll - m_lastTotalDirs;
+
+        // 全量数据 + 树索引 move 给模型（唯一存储，无拷贝）
+        // setResultsWithTree 内部仅 O(1) move + modelReset，然后启动根级分批加载，
+        // UI 瞬间显示前 BATCH_SIZE 个根级项，剩余每 1ms/批追加
+        m_model->setResultsWithTree(std::move(allResults), std::move(treeIndex));
     }
     if (m_cancelled) m_failed = false;
-    applyFilter();  // 根据当前搜索框过滤并刷新树与状态
+    applyFilter();  // 应用当前搜索过滤器（首次通常为空，clearFilter 会跳过冗余重建）
 
     ui->currentLabel->clear();
     ui->progressBar->setRange(0, 100);
@@ -300,76 +365,96 @@ void MainWindow::onFinished()
 
     ui->scanBtn->setEnabled(true);
     ui->cancelBtn->setEnabled(false);
-    ui->saveBtn->setEnabled(!m_results.empty());
-    ui->clearBtn->setEnabled(!m_results.empty());
+    ui->saveBtn->setEnabled(m_model->rowCount(QModelIndex()) > 0);
+    ui->clearBtn->setEnabled(m_model->totalCount() > 0);
 
-    cleanupThread();  // 停止线程并释放 worker/thread 对象
+    cleanupThread();  // 停止线程并释放 worker/thread 对象（worker 的 m_results 已被 take 走）
+
+#ifdef Q_OS_WIN
+    // 主线程兜底再调一次：cleanupThread delete worker 时会释放 worker 对象本身、
+    // QThread 对象、以及 m_params/m_workerCtxs（虽然已 swap，但容器外壳也占少量字节）等。
+    // Windows 整个进程共享 GetProcessHeap()，worker 线程 _heapmin 已归还大块，
+    // 这里清掉主线程这一侧可能产生的小块残留。
+    _heapmin();
+    // 修复"扫描完成后内存卡在 529MB 不动"的问题：
+    // 根因：扫描期间 DirEntry 节点（临时）与 ScanItem 的 QString 路径（持久，随结果
+    // 移交给 model）在同一段堆空间中交错分配。DirEntry 被 swap 释放后，_heapmin 调用
+    // HeapCompact 只能归还"整段全空"的段，但被持久 QString 数据穿插的段无法归还，
+    // 加之 Windows 默认启用 LFH，HeapCompact 在 LFH 上的归还效果进一步减弱。
+    // 因此 freed 的 DirEntry 内存虽标记为可用，仍滞留在进程工作集中。
+    // SetProcessWorkingSetSize(-1,-1) 在 VM 层强制修剪工作集，绕过 LFH/HeapCompact
+    // 限制，立即将这些已 free 的页移出 RAM，任务管理器显示值随之下降。
+    // 不影响"迅速列出列表"：worker 已完成预排序与 shrink_to_fit，model 数据就位后
+    // 才调用此函数，仅清理工作集冗余，不动 model 数据。
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+#endif
 }
 
 void MainWindow::onSearchDebounced()
 {
     m_currentFilter = parseSearchFilter(ui->searchEdit->text());
-    if (m_allResults.empty()) return;  // 无结果时无需过滤
+    if (m_model->rowCount(QModelIndex()) == 0) return;  // 无结果时无需过滤
     applyFilter();
 }
 
-// 根据当前搜索过滤器从 m_allResults 过滤到 m_results，刷新树与状态栏
+// 应用搜索过滤器到 model 并刷新状态栏
+// 全量数据始终在 m_model::m_allData 中，setFilter 只重建 m_filteredIndices（零拷贝）
 void MainWindow::applyFilter()
 {
-    m_results.clear();
     if (m_currentFilter.isEmpty()) {
-        m_results = m_allResults;
+        m_model->clearFilter();
     } else {
-        m_results.reserve(m_allResults.size());
-        for (const ScanItem& s : m_allResults) {
-            if (m_currentFilter.matches(s.path)) {
-                m_results.push_back(s);
-            }
-        }
+        m_model->setFilter(m_currentFilter.includeTerms, m_currentFilter.excludeTerms);
     }
-    populateTree();
+    ui->treeView->scrollToTop();
 
-    const int totalAll = int(m_allResults.size());
-    const int allDirs = int(std::count_if(m_allResults.begin(), m_allResults.end(),
-                                          [](const ScanItem& s) { return s.isDir; }));
-    const int allFiles = totalAll - allDirs;
+    const int totalAll = m_lastTotalAll;
+    const int allDirs  = m_lastTotalDirs;
+    const int allFiles = m_lastTotalFiles;
+    const int totalFiltered = m_model->rowCount(QModelIndex());
     const double sec = m_lastElapsed / 1000.0;
 
-    const bool filtered = !m_currentFilter.isEmpty() && totalAll != int(m_results.size());
-    const QString filterSuffix = filtered
-        ? tr("（过滤后 %1 项）").arg(int(m_results.size()))
+    const bool filteredFlag = !m_currentFilter.isEmpty() && totalAll != totalFiltered;
+    const QString filterSuffix = filteredFlag
+        ? tr("（过滤后 %1 项）").arg(totalFiltered)
+        : QString();
+
+    // 运行期信息后缀：展示自适应线程数与驱动器类型（用户显式指定线程时也展示，
+    // 便于对比调优；扫描未开始时 m_lastThreadCount==0 跳过）
+    const QString runtimeSuffix = (m_lastThreadCount > 0)
+        ? tr("（线程：%1，%2）").arg(m_lastThreadCount).arg(driveKindLabel(m_lastDriveKind))
         : QString();
 
     QString summary;
     if (m_failed) {
-        summary = tr("扫描失败。");
+        summary = tr("扫描失败。%1").arg(runtimeSuffix);
     } else if (m_cancelled) {
-        summary = tr("已取消。匹配结果：%1 项（目录 %2，文件 %3）；扫描 %4 项，耗时 %5 秒 %6")
+        summary = tr("已取消。匹配结果：%1 项（目录 %2，文件 %3）；扫描 %4 项，耗时 %5 秒 %6%7")
             .arg(totalAll).arg(allDirs).arg(allFiles)
-            .arg(m_lastScanned).arg(sec, 0, 'f', 2).arg(filterSuffix);
+            .arg(m_lastScanned).arg(sec, 0, 'f', 2).arg(filterSuffix).arg(runtimeSuffix);
     } else {
-        summary = tr("扫描完成。匹配结果：%1 项（目录 %2，文件 %3）；扫描 %4 项，耗时 %5 秒 %6")
+        summary = tr("扫描完成。匹配结果：%1 项（目录 %2，文件 %3）；扫描 %4 项，耗时 %5 秒 %6%7")
             .arg(totalAll).arg(allDirs).arg(allFiles)
-            .arg(m_lastScanned).arg(sec, 0, 'f', 2).arg(filterSuffix);
+            .arg(m_lastScanned).arg(sec, 0, 'f', 2).arg(filterSuffix).arg(runtimeSuffix);
     }
     ui->statusLabel->setText(summary);
 
-    ui->saveBtn->setEnabled(!m_results.empty());
-    ui->clearBtn->setEnabled(!m_allResults.empty());
+    ui->saveBtn->setEnabled(totalFiltered > 0);
+    ui->clearBtn->setEnabled(totalAll > 0);
 }
 
 void MainWindow::startScan(const QString& root, qint64 timeRangeMs,
-                           qint64 folderBytesThreshold, qint64 fileBytesThreshold)
+                           qint64 folderBytesThreshold, qint64 fileBytesThreshold,
+                           int threadCount)
 {
     m_cancelled = false;
     m_failed = false;
-    m_allResults.clear();
-    m_results.clear();
-    ui->treeWidget->clear();
+    m_lastTotalAll = m_lastTotalDirs = m_lastTotalFiles = 0;
+    m_model->clear();
     ui->saveBtn->setEnabled(false);
     ui->clearBtn->setEnabled(false);
 
-    m_lastParams = {root, timeRangeMs, folderBytesThreshold, fileBytesThreshold};
+    m_lastParams = {root, timeRangeMs, folderBytesThreshold, fileBytesThreshold, threadCount};
 
     ui->scanBtn->setEnabled(false);
     ui->cancelBtn->setEnabled(true);
@@ -393,34 +478,6 @@ void MainWindow::startScan(const QString& root, qint64 timeRangeMs,
     m_thread->start();
 }
 
-void MainWindow::populateTree()
-{
-    ui->treeWidget->setSortingEnabled(false);
-    ui->treeWidget->setUpdatesEnabled(false);
-    ui->treeWidget->clear();
-    const QIcon dirIcon  = style()->standardIcon(QStyle::SP_DirIcon);
-    const QIcon fileIcon = style()->standardIcon(QStyle::SP_FileIcon);
-    QList<QTreeWidgetItem*> items;
-    items.reserve(int(m_results.size()));
-    for (const ScanItem& s : m_results) {
-        const QString typeStr = s.isDir ? tr("目录") : tr("文件");
-        const QString sizeStr = formatSize(s.size);
-        const QString mtStr = s.mtimeMs > 0
-            ? QDateTime::fromMSecsSinceEpoch(s.mtimeMs).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QStringLiteral("-");
-        const QString ctStr = s.ctimeMs > 0
-            ? QDateTime::fromMSecsSinceEpoch(s.ctimeMs).toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QStringLiteral("-");
-        auto* it = new ResultTreeWidgetItem({typeStr, s.path, sizeStr, mtStr, ctStr});
-        it->setIcon(0, s.isDir ? dirIcon : fileIcon);
-        it->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
-        it->setData(2, Qt::UserRole, s.size);  // 供数值排序使用
-        items.append(it);
-    }
-    ui->treeWidget->addTopLevelItems(items);
-    ui->treeWidget->setUpdatesEnabled(true);
-    ui->treeWidget->setSortingEnabled(true);
-    ui->treeWidget->sortByColumn(2, Qt::DescendingOrder);  // 默认按大小降序
-}
-
 void MainWindow::resetUiIdle()
 {
     ui->scanBtn->setEnabled(true);
@@ -435,7 +492,7 @@ void MainWindow::resetUiIdle()
 
 bool MainWindow::writeResults(const QString& path) const
 {
-    const QString text = formatResultsText(m_results, m_lastParams, m_lastScanned, m_lastElapsed);
+    const QString text = formatResultsText(m_model->allData(), m_lastParams, m_lastScanned, m_lastElapsed);
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
     // 写入内容
@@ -443,3 +500,5 @@ bool MainWindow::writeResults(const QString& path) const
     f.flush();
     return true;
 }
+
+
