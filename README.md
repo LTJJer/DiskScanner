@@ -4,6 +4,7 @@
   <h1>Disk Scanner</h1>
   <p>扫描并显示指定路径下指定时间内创建或修改过、大小大于指定大小的文件或文件夹</p>
 
+  [![Release](https://img.shields.io/github/v/release/LTJJer/DiskScanner)](https://github.com/LTJJer/DiskScanner/releases/latest) [![Stars](https://img.shields.io/github/stars/LTJJer/DiskScanner.svg?style=flat&label=Stars&logo=github&logoColor=white)](https://github.com/LTJJer/DiskScanner)
   ![Platform](https://img.shields.io/badge/Platform-Windows-blue) [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE.txt) [![Qt](https://img.shields.io/badge/Qt6-gray?logo=qt)](https://www.qt.io/)
 
   <br>
@@ -31,21 +32,21 @@
 - **如果你想：** 给里面的 `Disk Scanner.exe` 添加快捷方式到桌面
 
 ### 卸载
-- 直接删掉软件文件和快捷方式即可，这软件不会保存任何数据
+- 直接删掉软件文件和快捷方式即可
 
 ---
 
 # 开发相关
 ## 环境
-- **构建工具**: qmake
-- **Qt**: Qt 6
+- **构建工具**: QMake
+- **Qt**: Qt 6.11.1
 - **C++ 标准**: C++23
 
 ---
 
 # 其他
 ## 许可证
-本项目采用 MIT 许可证。详见 [LICENSE.txt](LICENSE.txt)。
+本项目采用 MIT 许可证。详见 [LICENSE](LICENSE)。
 
 ## 致谢
 - 感谢所有开源库和社区贡献者
