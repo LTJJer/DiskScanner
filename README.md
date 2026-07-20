@@ -5,6 +5,7 @@
   <p>扫描并显示指定路径下指定时间内创建或修改过、大小大于指定大小的文件或文件夹</p>
 
   [![Release](https://img.shields.io/github/v/release/LTJJer/DiskScanner)](https://github.com/LTJJer/DiskScanner/releases/latest) [![Stars](https://img.shields.io/github/stars/LTJJer/DiskScanner.svg?style=flat&label=Stars&logo=github&logoColor=white)](https://github.com/LTJJer/DiskScanner)
+  
   ![Platform](https://img.shields.io/badge/Platform-Windows-blue) [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE.txt) [![Qt](https://img.shields.io/badge/Qt6-gray?logo=qt)](https://www.qt.io/)
 
   <br>
