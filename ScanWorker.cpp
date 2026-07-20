@@ -71,6 +71,20 @@ static std::wstring extractDriveRoot(const std::wstring& nativePath)
     return std::wstring();
 }
 
+// 查询驱动器已用空间（总空间 - 空闲空间），用于整盘扫描进度计算
+// driveRoot 格式如 "D:\"，返回 0 表示查询失败
+static qint64 queryDriveUsedBytes(const std::wstring& driveRoot)
+{
+    ULARGE_INTEGER freeBytesAvailable, totalBytes, totalFreeBytes;
+    if (GetDiskFreeSpaceExW(driveRoot.c_str(), &freeBytesAvailable, &totalBytes, &totalFreeBytes)) {
+        const qint64 total = qint64(totalBytes.QuadPart);
+        const qint64 free = qint64(totalFreeBytes.QuadPart);
+        const qint64 used = total - free;
+        return used > 0 ? used : 0;
+    }
+    return 0;
+}
+
 // 在 STORAGE_DEVICE_DESCRIPTOR 跟随的变长 ASCII 字符串区域中搜索 needle（不区分大小写）
 // desc 指向整个 buffer 起始，bufferSize 为 buffer 字节数
 // STORAGE_DEVICE_DESCRIPTOR 中各 *Offset 字段为相对 buffer 起始的字节偏移，0 表示不存在
@@ -290,6 +304,18 @@ void ScanWorker::doScan()
     // 创建根节点（存入 worker 0 的本地池）并入队
     // QDir::toNativeSeparators 后驱动器根为 "D:\"（单反斜杠），joinPath 会正确处理
     const std::wstring rootNative = QDir::toNativeSeparators(m_params.root).toStdWString();
+
+    // 整盘扫描检测：若扫描根为驱动器根（如 "D:\"），查询磁盘已用空间用于进度计算
+    // 非驱动器根扫描时 m_driveUsedBytes 保持 0，进度条显示忙碌指示
+#ifdef Q_OS_WIN
+    {
+        const std::wstring driveRoot = extractDriveRoot(rootNative);
+        if (!driveRoot.empty() && driveRoot == rootNative) {
+            m_driveUsedBytes = queryDriveUsedBytes(driveRoot);
+        }
+    }
+#endif
+
     m_rootEntry = createDirEntryLocal(*m_workerCtxs[0], rootNative, nullptr, 0, 0);
 
     m_pendingDirs.fetch_add(1, std::memory_order_relaxed);
@@ -483,9 +509,11 @@ void ScanWorker::cancel()
     m_cv.notify_all();
 }
 
-// 修改时间或创建时间在指定小时之内即视为匹配
+// 修改时间或创建时间在指定时刻之后即视为匹配
+// timeRangeMs == 0 表示不限时间，所有项均匹配（含无效时间戳）
 bool ScanWorker::timeMatches(qint64 mtimeMs, qint64 ctimeMs) const
 {
+    if (m_params.timeRangeMs <= 0) return true;
     if (mtimeMs > 0 && mtimeMs >= m_cutoffMs) return true;
     if (ctimeMs > 0 && ctimeMs >= m_cutoffMs) return true;
     return false;
@@ -508,15 +536,18 @@ void ScanWorker::emitProgress(const std::wstring& currentPathNative, qint64 nowM
                 std::memory_order_relaxed, std::memory_order_relaxed)) {
             // 读取各线程本地计数器之和作为实时进度
             int scanned = 0, dirs = 0, files = 0, matched = 0;
+            qint64 bytes = 0;
             for (const auto& ctx : m_workerCtxs) {
                 scanned += ctx->scanned;
                 dirs += ctx->scannedDirs;
                 files += ctx->scannedFiles;
                 matched += int(ctx->localResults.size());
+                bytes += ctx->scannedBytes;
             }
             emit progress(scanned, dirs, files, matched, nowMs,
                          QString::fromWCharArray(currentPathNative.c_str(),
-                                                  int(currentPathNative.size())));
+                                                  int(currentPathNative.size())),
+                         bytes, m_driveUsedBytes);
         }
     }
 }
@@ -602,8 +633,9 @@ qint64 ScanWorker::aggregateSizes(DirEntry* node)
     node->totalSize = total;
 
     // 根目录不加入结果（与原实现一致）
+    // 大小阈值：0 = 不限大小（包含空文件夹）；>0 = total > threshold
     if (node != m_rootEntry &&
-        total > m_folderBytesThreshold &&
+        (m_folderBytesThreshold == 0 || total > m_folderBytesThreshold) &&
         timeMatches(node->mtimeMs, node->ctimeMs)) {
         // Phase 2 单线程，直接追加到 m_results，无需锁
         // 同步记录 DirEntry* -> m_results 下标，供 buildTreeIndex 查找文件夹父项
@@ -705,9 +737,10 @@ void ScanWorker::processDir(DirEntry* node, WorkerContext& ctx)
             ++ctx.scannedFiles;
             const qint64 sz = (qint64(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
             node->selfFilesSize += sz;
+            ctx.scannedBytes += sz;  // 累计已扫描字节（用于整盘扫描进度）
 
-            // 仅在大小阈值通过时才检查时间并构造路径
-            if (sz > m_fileBytesThreshold) {
+            // 大小阈值：0 = 不限大小（包含 0 字节文件）；>0 = sz > threshold
+            if (m_fileBytesThreshold == 0 || sz > m_fileBytesThreshold) {
                 const qint64 mtMs = fileTimeToMs(fd.ftLastWriteTime);
                 const qint64 ctMs = fileTimeToMs(fd.ftCreationTime);
                 if (timeMatches(mtMs, ctMs)) {
@@ -772,7 +805,8 @@ void ScanWorker::processDir(DirEntry* node, WorkerContext& ctx)
             ++ctx.scannedFiles;
             const qint64 sz = info.size();
             selfSize += sz;
-            if (sz > m_fileBytesThreshold) {
+            ctx.scannedBytes += sz;  // 累计已扫描字节（用于整盘扫描进度）
+            if (m_fileBytesThreshold == 0 || sz > m_fileBytesThreshold) {
                 const qint64 mtMs = info.lastModified().isValid() ? info.lastModified().toMSecsSinceEpoch() : 0;
                 const qint64 ctMs = info.birthTime().isValid() ? info.birthTime().toMSecsSinceEpoch() : 0;
                 if (timeMatches(mtMs, ctMs)) {

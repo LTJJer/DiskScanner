@@ -14,33 +14,27 @@ CONFIG += c++23
 
 
 
-QT += widgets
+QT += widgets concurrent
 
 
 
 # 源文件
 HEADERS += \
-    ScanTypes.h \
-    ScanWorker.h \
-    ScanResultsModel.h \
-    ResultsFormatter.h \
-    MainWindow.h
+    $$files(*.h) \
+    $$files(*.hpp)
 
 SOURCES += \
-    main.cpp \
-    ScanWorker.cpp \
-    ScanResultsModel.cpp \
-    ResultsFormatter.cpp \
-    MainWindow.cpp
+    $$files(*.c) \
+    $$files(*.cpp)
 
 FORMS += \
-    mainwindow.ui
+    $$files(*.ui)
 
 RESOURCES += \
-    resources.qrc
+    $$files(*.qrc)
 
 OTHER_FILES += \
-    LICENSE.txt \
+    LICENSE \
     README.md \
     # index.html
 
@@ -49,7 +43,7 @@ OTHER_FILES += \
 # 应用信息
 RC_ICONS = ./Resources/Icon/icon.ico
 
-VERSION = 1.3.0
+VERSION = 1.4.0
 MAKE_TARGET_COMPANY = "LT_JJ"
 QMAKE_TARGET_DESCRIPTION = $${TARGET}
 QMAKE_TARGET_COPYRIGHT = "Copyright © 2026 LT_JJ. Licensed under MIT."
