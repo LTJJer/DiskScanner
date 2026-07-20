@@ -69,7 +69,8 @@ public slots:
 
 signals:
     void progress(int scanned, int dirCount, int fileCount, int matchedCount,
-                  qint64 elapsedMs, const QString& currentPath);
+                  qint64 elapsedMs, const QString& currentPath,
+                  qint64 scannedBytes, qint64 totalBytes);
     void finished();
     void failed(const QString& msg);
 
@@ -101,6 +102,7 @@ private:
 
     int m_threadCount = 1;
     DriveKind m_driveKind = DriveKind::Unknown;  // 由 detectDriveKindForPath 在构造时填充
+    qint64 m_driveUsedBytes = 0;  // 整盘扫描时磁盘已用空间（0=非整盘扫描或查询失败，进度条显示忙碌指示）
 
     // 目录树节点：Phase 1 并行构建，Phase 2 顺序聚合
     struct DirEntry {
@@ -122,6 +124,7 @@ private:
         int scanned = 0;
         int scannedDirs = 0;
         int scannedFiles = 0;
+        qint64 scannedBytes = 0;  // 累计已扫描的文件大小（字节，用于整盘扫描进度）
         WorkerContext() {
             localNodes.reserve(256);
             localResults.reserve(256);
