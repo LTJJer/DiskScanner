@@ -2,7 +2,7 @@
   <img src="Resources/Icon/Icon.svg" alt="Disk Scanner 图标" width="200px">
 
   <h1>Disk Scanner</h1>
-  <p>扫描并显示指定路径下指定时间内创建或修改过、大小大于指定大小的文件或文件夹</p>
+  <p>扫描并显示指定路径下指定时间内创建或修改过、大小大于指定大小的文件或文件夹ttt</p>
 
   [![Release](https://img.shields.io/github/v/release/LTJJer/DiskScanner)](https://github.com/LTJJer/DiskScanner/releases/latest) [![Stars](https://img.shields.io/github/stars/LTJJer/DiskScanner.svg?style=flat&label=Stars&logo=github&logoColor=white)](https://github.com/LTJJer/DiskScanner)
   
